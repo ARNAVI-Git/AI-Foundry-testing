@@ -1,0 +1,11 @@
+﻿{
+  "environment": "test",
+  "foundry_project_endpoint": "https://<test-foundry-project>.openai.azure.com/",
+  "model_deployment_name": "gpt-4o",
+  "agent_name": "it-support-assistant",
+  "azure_location": "eastus",
+  "log_analytics_workspace": "ai-agent-test-law",
+  "app_insights": "ai-agent-test-appi",
+  "target_resource_group": "rg-ai-agent-test",
+  "notes": "Test / QA environment — automatic promotion from Dev. Replace placeholder endpoint."
+}

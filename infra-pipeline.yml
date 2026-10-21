@@ -1,0 +1,279 @@
+﻿# ============================================================
+# infra-pipeline.yml
+# Infrastructure-only pipeline — runs only when infra/** changes.
+# Responsible for: Bicep compile → validate → what-if → deploy
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/**
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  azureServiceConnection: "sc-ai-foundry-deploy"
+
+# ============================================================
+# Stage 1 — Validate Bicep (all environments, no deployment)
+# ============================================================
+stages:
+  - stage: Validate
+    displayName: "Validate Bicep Templates"
+    jobs:
+      - job: ValidateBicep
+        displayName: "Compile and validate all parameter files"
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: "Install latest Bicep CLI"
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az bicep install
+                az bicep version
+
+          - task: AzureCLI@2
+            displayName: "Compile Bicep → ARM"
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az bicep build --file infra/main.bicep
+                echo "Bicep compilation succeeded"
+
+          - task: AzureCLI@2
+            displayName: "Validate against Dev"
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az deployment group validate \
+                  --resource-group "$TARGET_RESOURCE_GROUP" \
+                  --template-file infra/main.bicep \
+                  --parameters infra/dev.bicepparam
+            env:
+              TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP_DEV)
+
+          - task: AzureCLI@2
+            displayName: "Validate against Test"
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az deployment group validate \
+                  --resource-group "$TARGET_RESOURCE_GROUP" \
+                  --template-file infra/main.bicep \
+                  --parameters infra/test.bicepparam
+            env:
+              TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP_TEST)
+
+          - task: AzureCLI@2
+            displayName: "Validate against Production"
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az deployment group validate \
+                  --resource-group "$TARGET_RESOURCE_GROUP" \
+                  --template-file infra/main.bicep \
+                  --parameters infra/prod.bicepparam
+            env:
+              TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP_PROD)
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: "infra"
+              ArtifactName: "infra-templates"
+            displayName: "Publish compiled infrastructure templates"
+
+  # ============================================================
+  # Stage 2 — Deploy Dev Infrastructure
+  # ============================================================
+  - stage: Deploy_Dev_Infrastructure
+    displayName: "Deploy Dev Infrastructure"
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      - group: ai-agent-dev
+    jobs:
+      - deployment: DeployDevInfra
+        displayName: "What-if + deploy Dev monitoring resources"
+        environment: ai-infra-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "What-if preview — Dev"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      echo "======= WHAT-IF PREVIEW (Dev) ======="
+                      az deployment group what-if \
+                        --name "ai-agent-dev-preview-$(Build.BuildId)" \
+                        --resource-group "$TARGET_RESOURCE_GROUP" \
+                        --template-file infra/main.bicep \
+                        --parameters infra/dev.bicepparam
+                      echo "======= END WHAT-IF ======="
+                  env:
+                    TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP)
+
+                - task: AzureCLI@2
+                  displayName: "Deploy Dev infrastructure"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      az deployment group create \
+                        --name "ai-agent-dev-infra-$(Build.BuildId)" \
+                        --resource-group "$TARGET_RESOURCE_GROUP" \
+                        --template-file infra/main.bicep \
+                        --parameters infra/dev.bicepparam \
+                        --mode Incremental
+                      echo "Dev infrastructure deployment complete"
+                  env:
+                    TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP)
+
+  # ============================================================
+  # Stage 3 — Deploy Test Infrastructure
+  # ============================================================
+  - stage: Deploy_Test_Infrastructure
+    displayName: "Deploy Test Infrastructure"
+    dependsOn: Deploy_Dev_Infrastructure
+    condition: succeeded()
+    variables:
+      - group: ai-agent-test
+    jobs:
+      - deployment: DeployTestInfra
+        displayName: "What-if + deploy Test monitoring resources"
+        environment: ai-infra-test
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "What-if preview — Test"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      az deployment group what-if \
+                        --name "ai-agent-test-preview-$(Build.BuildId)" \
+                        --resource-group "$TARGET_RESOURCE_GROUP" \
+                        --template-file infra/main.bicep \
+                        --parameters infra/test.bicepparam
+                  env:
+                    TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP)
+
+                - task: AzureCLI@2
+                  displayName: "Deploy Test infrastructure"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      az deployment group create \
+                        --name "ai-agent-test-infra-$(Build.BuildId)" \
+                        --resource-group "$TARGET_RESOURCE_GROUP" \
+                        --template-file infra/main.bicep \
+                        --parameters infra/test.bicepparam \
+                        --mode Incremental
+                  env:
+                    TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP)
+
+  # ============================================================
+  # Stage 4 — Deploy Production Infrastructure (requires approval)
+  # ============================================================
+  - stage: Deploy_Prod_Infrastructure
+    displayName: "Deploy Production Infrastructure"
+    dependsOn: Deploy_Test_Infrastructure
+    condition: succeeded()
+    variables:
+      - group: ai-agent-prod
+    jobs:
+      - deployment: DeployProdInfra
+        displayName: "What-if + deploy Production monitoring resources"
+        # *** Configure an approval check on environment ai-infra-prod in Azure DevOps ***
+        environment: ai-infra-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: "What-if preview — Production"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      az deployment group what-if \
+                        --name "ai-agent-prod-preview-$(Build.BuildId)" \
+                        --resource-group "$TARGET_RESOURCE_GROUP" \
+                        --template-file infra/main.bicep \
+                        --parameters infra/prod.bicepparam
+                  env:
+                    TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP)
+
+                - task: AzureCLI@2
+                  displayName: "Deploy Production infrastructure"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      az deployment group create \
+                        --name "ai-agent-prod-infra-$(Build.BuildId)" \
+                        --resource-group "$TARGET_RESOURCE_GROUP" \
+                        --template-file infra/main.bicep \
+                        --parameters infra/prod.bicepparam \
+                        --mode Incremental
+                      echo "Production infrastructure deployment complete"
+                  env:
+                    TARGET_RESOURCE_GROUP: $(TARGET_RESOURCE_GROUP)
+
+                - task: PublishBuildArtifacts@1
+                  condition: succeeded()
+                  inputs:
+                    PathtoPublish: "infra"
+                    ArtifactName: "prod-infra-evidence"
+                  displayName: "Publish infrastructure deployment evidence"

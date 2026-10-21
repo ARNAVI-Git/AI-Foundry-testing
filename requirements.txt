@@ -1,0 +1,12 @@
+﻿# Production dependencies for the IT Support Assistant hosted agent.
+# Pin exact versions for reproducible builds and to pass pip-audit scans.
+# Update regularly and re-run pip-audit after each update.
+
+# Azure AI Foundry SDK (Agents)
+azure-ai-projects==1.0.0b11
+
+# Azure identity (DefaultAzureCredential, WorkloadIdentityCredential, etc.)
+azure-identity==1.21.0
+
+# Application Insights telemetry (optional — configure via connection string)
+opencensus-ext-azure==1.1.13

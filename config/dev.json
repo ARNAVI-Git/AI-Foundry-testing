@@ -1,0 +1,11 @@
+﻿{
+  "environment": "dev",
+  "foundry_project_endpoint": "https://<dev-foundry-project>.openai.azure.com/",
+  "model_deployment_name": "gpt-4o",
+  "agent_name": "it-support-assistant",
+  "azure_location": "eastus",
+  "log_analytics_workspace": "ai-agent-dev-law",
+  "app_insights": "ai-agent-dev-appi",
+  "target_resource_group": "rg-ai-agent-dev",
+  "notes": "Development environment — automatic deployment after CI passes. Replace placeholder endpoint."
+}

@@ -1,0 +1,61 @@
+﻿[build-system]
+requires = ["setuptools>=72", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "it-support-assistant"
+version = "0.1.0"
+description = "Azure AI Foundry hosted IT Support Assistant — CI/CD PoC"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[project.scripts]
+it-support-assistant = "src.it_support_agent.main:main"
+
+# ---------------------------------------------------------------
+# Ruff — linting and formatting
+# ---------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "UP",   # pyupgrade
+  "S",    # bandit security
+  "B",    # flake8-bugbear
+  "C4",   # flake8-comprehensions
+  "SIM",  # flake8-simplify
+]
+ignore = [
+  "S101",   # Allow assert statements in tests
+  "S603",   # Allow subprocess calls (used in pipeline scripts only)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S106"]  # Allow asserts and hardcoded passwords in tests
+
+# ---------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+markers = [
+  "live: marks tests that require a live Foundry endpoint (deselect with -m 'not live')",
+]
+
+# ---------------------------------------------------------------
+# mypy (optional static type checking)
+# ---------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

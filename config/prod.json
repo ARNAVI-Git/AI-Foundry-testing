@@ -1,0 +1,11 @@
+﻿{
+  "environment": "prod",
+  "foundry_project_endpoint": "https://<prod-foundry-project>.openai.azure.com/",
+  "model_deployment_name": "gpt-4o",
+  "agent_name": "it-support-assistant",
+  "azure_location": "eastus",
+  "log_analytics_workspace": "ai-agent-prod-law",
+  "app_insights": "ai-agent-prod-appi",
+  "target_resource_group": "rg-ai-agent-prod",
+  "notes": "Production environment — requires explicit approval. Replace placeholder endpoint."
+}

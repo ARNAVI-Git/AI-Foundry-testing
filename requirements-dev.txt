@@ -1,0 +1,22 @@
+﻿# Development and CI dependencies.
+# These are NOT included in the production deployment package.
+
+# Include production dependencies
+-r requirements.txt
+
+# Testing
+pytest==8.3.5
+pytest-asyncio==0.24.0
+
+# Linting and formatting
+ruff==0.9.9
+
+# Security scanning
+bandit==1.8.3
+pip-audit==2.8.0
+
+# Type checking (optional — for IDE support)
+mypy==1.13.0
+
+# Markdown rendering for prompt files (local testing only)
+mistune==3.1.3

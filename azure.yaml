@@ -1,0 +1,33 @@
+﻿# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+name: it-support-assistant
+metadata:
+  template: ai-foundry-agent@0.0.1-beta
+
+services:
+  it-support-assistant:
+    project: ./src/it_support_agent
+    language: python
+    host: ai.agents
+
+    # Source-code deployment: azd packages and uploads the source directory.
+    # Foundry builds the dependencies inside the hosted runtime.
+    deploymentMode: code
+
+    # Agent configuration — align these with the target Foundry project.
+    # Values are read from AZD environment variables at deploy time.
+    config:
+      agentName: ${AGENT_NAME}
+      model: ${MODEL_DEPLOYMENT_NAME}
+      instructions: ./src/it_support_agent/prompts/system.md
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+hooks:
+  postdeploy:
+    shell: sh
+    run: python -m pytest tests/test_smoke.py --tb=short
+    interactive: false

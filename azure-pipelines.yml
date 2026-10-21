@@ -1,0 +1,318 @@
+﻿# ============================================================
+# azure-pipelines.yml
+# Application CI/CD pipeline — IT Support Assistant
+# Stages: CI → Dev → Test → Production
+# ============================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  pythonVersion: "3.12"
+  agentName: "it-support-assistant"
+  azureServiceConnection: "sc-ai-foundry-deploy"
+
+# ============================================================
+# Stage 1 — CI: Lint, test, security, Bicep compile
+# ============================================================
+stages:
+  - stage: CI
+    displayName: "Validate and Test"
+    jobs:
+      - job: Validate
+        displayName: "Lint, unit tests, security, Bicep"
+        steps:
+          - checkout: self
+            fetchDepth: 0
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "$(pythonVersion)"
+            displayName: "Set Python $(pythonVersion)"
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              pip install -r requirements-dev.txt
+            displayName: "Install dependencies"
+
+          - script: |
+              ruff check src tests
+              ruff format --check src tests
+            displayName: "Lint (ruff)"
+
+          - script: |
+              bandit -r src -ll -ii --exit-zero
+            displayName: "Security scan (bandit)"
+
+          - script: |
+              pip-audit --requirement requirements.txt --require-hashes --exit-code
+            displayName: "Dependency vulnerability scan (pip-audit)"
+
+          - script: |
+              pytest tests/test_unit.py \
+                --junitxml=$(Common.TestResultsDirectory)/unit.xml \
+                -v
+            displayName: "Unit tests"
+
+          - script: |
+              pytest tests/test_agent_evaluation.py \
+                --junitxml=$(Common.TestResultsDirectory)/evaluation.xml \
+                -v
+            displayName: "Agent evaluation gate (dataset validation)"
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: "**/*.xml"
+              searchFolder: "$(Common.TestResultsDirectory)"
+              failTaskOnFailedTests: true
+            displayName: "Publish test results"
+
+          - script: |
+              az bicep build --file infra/main.bicep
+            displayName: "Compile Bicep template"
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: "$(Build.SourcesDirectory)"
+              ArtifactName: "agent-source"
+              publishLocation: "Container"
+            displayName: "Publish source artifact"
+
+  # ============================================================
+  # Stage 2 — Deploy to Development
+  # ============================================================
+  - stage: Deploy_Dev
+    displayName: "Deploy to Development"
+    dependsOn: CI
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+      - group: ai-agent-dev
+    jobs:
+      - deployment: DeployDev
+        displayName: "Deploy agent to Dev"
+        environment: ai-agent-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: "$(pythonVersion)"
+                  displayName: "Set Python $(pythonVersion)"
+
+                - script: |
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                    pip install -r requirements-dev.txt
+                  displayName: "Install dependencies"
+
+                - task: AzureCLI@2
+                  displayName: "Install AZD"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      curl -fsSL https://aka.ms/install-azd.sh | bash
+                      azd version
+
+                - task: AzureCLI@2
+                  displayName: "Deploy agent (azd) and smoke test"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      azd env select "$(AZD_ENV_NAME)"
+                      azd env set FOUNDRY_PROJECT_ENDPOINT "$(FOUNDRY_PROJECT_ENDPOINT)"
+                      azd env set MODEL_DEPLOYMENT_NAME "$(MODEL_DEPLOYMENT_NAME)"
+                      azd deploy --no-prompt
+                  env:
+                    AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                    AZURE_LOCATION: $(AZURE_LOCATION)
+
+                - script: |
+                    python -m pytest tests/test_smoke.py \
+                      --junitxml=$(Common.TestResultsDirectory)/smoke-dev.xml \
+                      -v
+                  displayName: "Smoke tests — Dev"
+                  env:
+                    FOUNDRY_PROJECT_ENDPOINT: $(FOUNDRY_PROJECT_ENDPOINT)
+                    MODEL_DEPLOYMENT_NAME: $(MODEL_DEPLOYMENT_NAME)
+
+                - task: PublishTestResults@2
+                  condition: succeededOrFailed()
+                  inputs:
+                    testResultsFormat: JUnit
+                    testResultsFiles: "smoke-dev.xml"
+                    searchFolder: "$(Common.TestResultsDirectory)"
+                    failTaskOnFailedTests: true
+
+  # ============================================================
+  # Stage 3 — Deploy to Test / QA
+  # ============================================================
+  - stage: Deploy_Test
+    displayName: "Deploy to Test / QA"
+    dependsOn: Deploy_Dev
+    condition: succeeded()
+    variables:
+      - group: ai-agent-test
+    jobs:
+      - deployment: DeployTest
+        displayName: "Deploy agent to Test"
+        environment: ai-agent-test
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: "$(pythonVersion)"
+
+                - script: |
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                    pip install -r requirements-dev.txt
+                  displayName: "Install dependencies"
+
+                - task: AzureCLI@2
+                  displayName: "Install AZD"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      curl -fsSL https://aka.ms/install-azd.sh | bash
+
+                - task: AzureCLI@2
+                  displayName: "Deploy agent to Test"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      azd env select "$(AZD_ENV_NAME)"
+                      azd env set FOUNDRY_PROJECT_ENDPOINT "$(FOUNDRY_PROJECT_ENDPOINT)"
+                      azd env set MODEL_DEPLOYMENT_NAME "$(MODEL_DEPLOYMENT_NAME)"
+                      azd deploy --no-prompt
+                  env:
+                    AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                    AZURE_LOCATION: $(AZURE_LOCATION)
+
+                - script: |
+                    python -m pytest tests/test_smoke.py tests/test_agent_evaluation.py \
+                      --junitxml=$(Common.TestResultsDirectory)/smoke-test.xml \
+                      -v
+                  displayName: "Smoke + evaluation tests — Test"
+                  env:
+                    FOUNDRY_PROJECT_ENDPOINT: $(FOUNDRY_PROJECT_ENDPOINT)
+                    MODEL_DEPLOYMENT_NAME: $(MODEL_DEPLOYMENT_NAME)
+
+                - task: PublishTestResults@2
+                  condition: succeededOrFailed()
+                  inputs:
+                    testResultsFormat: JUnit
+                    testResultsFiles: "smoke-test.xml"
+                    searchFolder: "$(Common.TestResultsDirectory)"
+                    failTaskOnFailedTests: true
+
+  # ============================================================
+  # Stage 4 — Release to Production (requires approval)
+  # ============================================================
+  - stage: Deploy_Prod
+    displayName: "Release to Production"
+    dependsOn: Deploy_Test
+    condition: succeeded()
+    variables:
+      - group: ai-agent-prod
+    jobs:
+      - deployment: DeployProd
+        displayName: "Release agent to Production"
+        # *** Configure an approval check on environment ai-agent-prod in Azure DevOps ***
+        environment: ai-agent-prod
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: UsePythonVersion@0
+                  inputs:
+                    versionSpec: "$(pythonVersion)"
+
+                - script: |
+                    python -m pip install --upgrade pip
+                    pip install -r requirements.txt
+                    pip install -r requirements-dev.txt
+                  displayName: "Install dependencies"
+
+                - task: AzureCLI@2
+                  displayName: "Install AZD"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      curl -fsSL https://aka.ms/install-azd.sh | bash
+
+                - task: AzureCLI@2
+                  displayName: "Release agent to Production"
+                  inputs:
+                    azureSubscription: "$(azureServiceConnection)"
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      set -euo pipefail
+                      azd env select "$(AZD_ENV_NAME)"
+                      azd env set FOUNDRY_PROJECT_ENDPOINT "$(FOUNDRY_PROJECT_ENDPOINT)"
+                      azd env set MODEL_DEPLOYMENT_NAME "$(MODEL_DEPLOYMENT_NAME)"
+                      azd deploy --no-prompt
+                  env:
+                    AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                    AZURE_LOCATION: $(AZURE_LOCATION)
+
+                - script: |
+                    python -m pytest tests/test_smoke.py \
+                      --junitxml=$(Common.TestResultsDirectory)/smoke-prod.xml \
+                      -v
+                  displayName: "Smoke tests — Production"
+                  env:
+                    FOUNDRY_PROJECT_ENDPOINT: $(FOUNDRY_PROJECT_ENDPOINT)
+                    MODEL_DEPLOYMENT_NAME: $(MODEL_DEPLOYMENT_NAME)
+
+                - task: PublishTestResults@2
+                  condition: succeededOrFailed()
+                  inputs:
+                    testResultsFormat: JUnit
+                    testResultsFiles: "smoke-prod.xml"
+                    searchFolder: "$(Common.TestResultsDirectory)"
+                    failTaskOnFailedTests: true
+
+                - task: PublishBuildArtifacts@1
+                  condition: succeeded()
+                  inputs:
+                    PathtoPublish: "$(Common.TestResultsDirectory)"
+                    ArtifactName: "prod-release-evidence"
+                  displayName: "Publish release evidence"
