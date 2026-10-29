@@ -23,6 +23,7 @@ variables:
   pythonVersion: "3.12"
   agentName: "it-support-assistant"
   azureServiceConnection: "sc-ai-foundry-deploy"
+  FOUNDRY_PROJECT_ENDPOINT: "https://poc-foundry-a.services.ai.azure.com/api/projects/proj-default"
 
 # ============================================================
 # Stage 1 — CI: Lint, test, security, Bicep compile
